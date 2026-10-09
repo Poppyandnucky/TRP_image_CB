@@ -94,7 +94,7 @@ class QueueTests(unittest.TestCase):
                 event('button_press_event',.5,.5,target)
                 event('button_release_event',.5,.5,target)
             def field(y):
-                target=next(a for a in fig.axes if abs(a.get_position().y0-y)<.001 and abs(a.get_position().x0-.81)<.001)
+                target=next(a for a in fig.axes if abs(a.get_position().y0-y)<.001 and a.get_position().width > .08)
                 return target.texts[-1].get_text()
             button('\u25c0',1)
             self.assertEqual(field(.59),'2025Q4')
@@ -130,13 +130,13 @@ class QueueTests(unittest.TestCase):
             check_crosshairs(120,120)
             event('button_press_event',120,120)
             check_crosshairs(46,70)
-            self.assertTrue(any(t.get_text()=='Quarter: 2025Q2' for t in fig.texts))
+            self.assertTrue(any(t.get_text()=='Quarter: 2025 Q2' for t in fig.texts))
             event('button_press_event',46,70)
-            check_crosshairs(100,50)
+            check_crosshairs(30,70)
+            event('button_press_event',30,70)
             event('motion_notify_event',.5,.5,fig.axes[1])
             self.assertFalse(cross_x.get_visible())
             self.assertFalse(cross_y.get_visible())
-            check_crosshairs(100,50)
             event('button_press_event',100,50)
             self.assertFalse(cross_x.get_visible())
             self.assertFalse(cross_y.get_visible())
@@ -150,7 +150,8 @@ class QueueTests(unittest.TestCase):
         self.assertEqual(c['last_calibrated_image'],name)
         self.assertEqual(c['images'][name]['y_min'],-6)
         self.assertEqual(c['images'][name]['y_max'],6)
-        self.assertEqual(c['images'][name]['historical_rgb'],[0,0,0])
+        self.assertEqual(c['images'][name]['historical_rgb'],[35,68,134])
+        self.assertEqual(c['images'][name]['historical_color_tolerance'],45)
         self.assertEqual(c['images'][name]['plot_box_style'],'open_axes')
         self.assertEqual(c['images'][name]['last_historical'],'2025Q2')
         run.assert_called_once_with(self.config_path,images=[name])
@@ -175,7 +176,7 @@ class QueueTests(unittest.TestCase):
                 event('button_press_event',.5,.5,target)
                 event('button_release_event',.5,.5,target)
             # The new image inherits 2025Q4 + 1 = 2026Q1 without modifying its template.
-            end=next(a for a in fig.axes if abs(a.get_position().y0-.59)<.001 and abs(a.get_position().x0-.81)<.001)
+            end=next(a for a in fig.axes if abs(a.get_position().y0-.59)<.001 and a.get_position().width > .08)
             self.assertEqual(end.texts[-1].get_text(),'2026Q1')
             button('Adjust top left')
             event('motion_notify_event',21,21)
@@ -186,6 +187,7 @@ class QueueTests(unittest.TestCase):
             button('Accept box')
             self.assertTrue(any(t.get_text()=='3. LAST HISTORICAL point' for t in fig.texts))
             event('button_press_event',46,70)
+            event('button_press_event',30,70)
             event('button_press_event',100,50)
             button('Save and next')
         with patch.object(plt,'show',side_effect=interact), patch.object(calibrate,'run'):
@@ -197,6 +199,141 @@ class QueueTests(unittest.TestCase):
         self.assertAlmostEqual(c['images'][name]['plot_box'][0],21,delta=.1)
         self.assertAlmostEqual(c['images'][name]['plot_box'][2],120,delta=.1)
         self.assertEqual(c['images'][name]['last_historical'],'2025Q2')
+
+    def test_preview_manual_adjustment_can_be_reset_to_automatic(self):
+        name = self.names[1]
+        image = Image.new('RGB',(140,140),'white')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20,20,120,120),outline=(100,100,100))
+        draw.line([(20,70),(45,70)], fill=(35,68,134), width=3)
+        draw.polygon([(45,70),(70,50),(120,40),(120,60),(70,70)], fill=(35,68,134))
+        image.save(self.root/name)
+        self.config['images'][self.names[0]] = dict(x_start='2025Q1',x_end='2025Q4',y_min=-5,y_max=5)
+        self.config_path.write_text(json.dumps(self.config))
+        def interact(*args, **kwargs):
+            fig=plt.gcf();fig.canvas.draw();ax=fig.axes[0]
+            def event(kind,x,y,axes=ax):
+                sx,sy=(axes.transData if axes is ax else axes.transAxes).transform((x,y))
+                fig.canvas.callbacks.process(kind,MouseEvent(kind,fig.canvas,sx,sy,button=1))
+            def button(label):
+                target=next(a for a in fig.axes if any(t.get_text()==label for t in a.texts))
+                event('button_press_event',.5,.5,target)
+                event('button_release_event',.5,.5,target)
+            button('Accept box')
+            event('button_press_event',46,70)
+            event('button_press_event',30,70)
+            event('button_press_event',100,50)
+            button('Next: Manual Adjustment')
+            event('button_press_event',70,60)
+            event('motion_notify_event',70,85)
+            fig.canvas.callbacks.process('button_release_event',MouseEvent('button_release_event',fig.canvas,*ax.transData.transform((70,85)),button=1))
+            button('Reset Manual Adjustments')
+            button('Save and next')
+        with patch.object(plt,'show',side_effect=interact), patch.object(calibrate,'run'):
+            result=calibrate.launch(self.config_path,name,self.names[0],queue_position='1 of 2',advance_end=True)
+        self.assertEqual(result,'saved')
+        c=json.loads(self.config_path.read_text())
+        self.assertNotIn('manual_point_overrides',c['images'][name])
+
+    def test_preview_reset_returns_to_calibration_before_saving(self):
+        name = self.names[1]
+        image = Image.new('RGB',(140,140),'white')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20,20,120,120),outline=(100,100,100))
+        draw.line([(20,70),(45,70)], fill=(35,68,134), width=3)
+        draw.polygon([(45,70),(70,50),(120,40),(120,60),(70,70)], fill=(35,68,134))
+        image.save(self.root/name)
+        self.config['images'][self.names[0]] = dict(x_start='2025Q1',x_end='2025Q4',y_min=-5,y_max=5)
+        self.config_path.write_text(json.dumps(self.config))
+        def interact(*args, **kwargs):
+            fig=plt.gcf();fig.canvas.draw();ax=fig.axes[0]
+            def event(kind,x,y,axes=ax):
+                sx,sy=(axes.transData if axes is ax else axes.transAxes).transform((x,y))
+                fig.canvas.callbacks.process(kind,MouseEvent(kind,fig.canvas,sx,sy,button=1))
+            def button(label):
+                target=next(a for a in fig.axes if any(t.get_text()==label for t in a.texts))
+                event('button_press_event',.5,.5,target)
+                event('button_release_event',.5,.5,target)
+            button('Accept box')
+            event('button_press_event',46,70)
+            event('button_press_event',30,70)
+            event('button_press_event',100,50)
+            button('Reset All')
+            self.assertTrue(any(t.get_text()=='Review suggested box' for t in fig.texts))
+            button('Accept box')
+            event('button_press_event',46,70)
+            event('button_press_event',30,70)
+            event('button_press_event',100,50)
+            button('Save and next')
+        with patch.object(plt,'show',side_effect=interact), patch.object(calibrate,'run'):
+            result=calibrate.launch(self.config_path,name,self.names[0],queue_position='1 of 2',advance_end=True)
+        self.assertEqual(result,'saved')
+
+    def test_manual_adjustment_hides_calibration_pick_markers(self):
+        name = self.names[1]
+        image = Image.new('RGB',(140,140),'white')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20,20,120,120),outline=(100,100,100))
+        draw.line([(20,70),(45,70)], fill=(35,68,134), width=3)
+        draw.polygon([(45,70),(70,50),(120,40),(120,60),(70,70)], fill=(35,68,134))
+        image.save(self.root/name)
+        self.config['images'][self.names[0]] = dict(x_start='2025Q1',x_end='2025Q4',y_min=-5,y_max=5)
+        self.config_path.write_text(json.dumps(self.config))
+        def interact(*args, **kwargs):
+            fig=plt.gcf();fig.canvas.draw();ax=fig.axes[0]
+            def event(kind,x,y,axes=ax):
+                sx,sy=(axes.transData if axes is ax else axes.transAxes).transform((x,y))
+                fig.canvas.callbacks.process(kind,MouseEvent(kind,fig.canvas,sx,sy,button=1))
+            def button(label):
+                target=next(a for a in fig.axes if any(t.get_text()==label for t in a.texts))
+                event('button_press_event',.5,.5,target)
+                event('button_release_event',.5,.5,target)
+            button('Accept box')
+            event('button_press_event',46,70)
+            event('button_press_event',30,70)
+            event('button_press_event',100,50)
+            self.assertTrue(any(line.get_visible() and line.get_marker() == 'o' for line in ax.lines))
+            button('Next: Manual Adjustment')
+            self.assertFalse(any(line.get_visible() and line.get_marker() == 'o' and line.get_markersize() == 7 for line in ax.lines))
+            button('Save and next')
+        with patch.object(plt,'show',side_effect=interact), patch.object(calibrate,'run'):
+            result=calibrate.launch(self.config_path,name,self.names[0],queue_position='1 of 2',advance_end=True)
+        self.assertEqual(result,'saved')
+
+    def test_missing_point_can_be_added_at_fixed_quarter_x(self):
+        name = self.names[1]
+        image = Image.new('RGB',(140,140),'white')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((20,20,120,120),outline=(100,100,100))
+        draw.line([(20,70),(45,70)], fill=(35,68,134), width=3)
+        draw.polygon([(45,70),(70,50),(120,40),(120,60),(70,70)], fill=(35,68,134))
+        draw.rectangle((93,20,97,120),fill='white')
+        image.save(self.root/name)
+        self.config['images'][self.names[0]] = dict(x_start='2025Q1',x_end='2025Q4',y_min=-5,y_max=5)
+        self.config_path.write_text(json.dumps(self.config))
+        def interact(*args, **kwargs):
+            fig=plt.gcf();fig.canvas.draw();ax=fig.axes[0]
+            def event(kind,x,y,axes=ax):
+                sx,sy=(axes.transData if axes is ax else axes.transAxes).transform((x,y))
+                fig.canvas.callbacks.process(kind,MouseEvent(kind,fig.canvas,sx,sy,button=1))
+            def button(label):
+                target=next(a for a in fig.axes if any(t.get_text()==label for t in a.texts))
+                event('button_press_event',.5,.5,target)
+                event('button_release_event',.5,.5,target)
+            button('Accept box')
+            event('button_press_event',46,70)
+            event('button_press_event',30,70)
+            event('button_press_event',100,50)
+            self.assertTrue(any('Missing data point: 2025 Q4' in t.get_text() for t in fig.texts))
+            button('Next: Manual Adjustment')
+            button('Add Missing Point')
+            event('button_press_event',30,85)
+            button('Save and next')
+        with patch.object(plt,'show',side_effect=interact), patch.object(calibrate,'run'):
+            result=calibrate.launch(self.config_path,name,self.names[0],queue_position='1 of 2',advance_end=True)
+        self.assertEqual(result,'saved')
+        c=json.loads(self.config_path.read_text())
+        self.assertAlmostEqual(c['images'][name]['manual_point_overrides']['2025Q4']['pixel_y'],85,delta=.1)
 
 if __name__ == '__main__':
     unittest.main()

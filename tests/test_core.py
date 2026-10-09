@@ -42,6 +42,7 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(report_quarter('BRA_2012_Sep.png'),'2012Q3')
         self.assertEqual(report_quarter('BRA_2012_Dec.png'),'2012Q4')
         self.assertEqual(report_quarter('CHL_2025_Q3.png'),'2025Q3')
+        self.assertEqual(report_quarter('PER 2002 Q2.png'),'2002Q2')
         names=['BRA_2013_Dec.png','BRA_2013_Sep.png','BRA_2013_Mar.png','BRA_2013_Jun.png']
         self.assertEqual(sorted(names,key=report_sort_key),[names[2],names[3],names[1],names[0]])
         self.make_image()
@@ -67,6 +68,20 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(result.rows[2]['series'],'forecast_band_midpoint')
         self.assertAlmostEqual(result.rows[4]['central_band_lower_pct'],1,delta=.1)
         self.assertAlmostEqual(result.rows[4]['central_band_upper_pct'],3,delta=.101)
+    def test_manual_point_override_replaces_extracted_y_value(self):
+        self.make_image()
+        c={**self.c,'manual_point_overrides':{'2025Q3':{'pixel_y':80}}}
+        row=extract(self.path,c,'TST').rows[2]
+        self.assertEqual(row['extraction_method'],'manual_override')
+        self.assertEqual(row['quality_flag'],'manual_override')
+        self.assertAlmostEqual(row['inflation_pct_yoy'],-1,delta=.01)
+    def test_manual_point_override_can_fill_missing_auto_point(self):
+        self.make_image(missing=True)
+        c={**self.c,'manual_point_overrides':{'2025Q4':{'pixel_y':80}}}
+        row=extract(self.path,c,'TST').rows[3]
+        self.assertEqual(row['extraction_method'],'manual_override')
+        self.assertIn('manual_override',row['quality_flag'])
+        self.assertAlmostEqual(row['inflation_pct_yoy'],-1,delta=.01)
     def test_missing_values_are_flagged_not_fabricated(self):
         self.make_image(missing=True)
         result=extract(self.path,self.c,'TST')

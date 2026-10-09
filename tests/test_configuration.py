@@ -15,7 +15,7 @@ class ConfigurationTests(unittest.TestCase):
 
     def test_seed_copy_preserves_examples_and_refuses_overwrite(self):
         p=self.root/'config/seeds/PER.json';p.parent.mkdir(parents=True)
-        seed=dict(country='PER',config_role='seed',input_directory='data/PER/screenshots',
+        seed=dict(country='PER',config_role='seed',input_directory='data/PHL/screenshots',
                   output_directory='output/PER',images={'PER_2020_Q1.png':{'review_status':'reviewed'}})
         p.write_text(json.dumps(seed))
         path=initialize_country('PER',root=self.root)
@@ -34,7 +34,7 @@ class ConfigurationTests(unittest.TestCase):
         path=initialize_country('per',root=self.root)
         c=load_working_config(path)
         self.assertEqual(c['images'],{})
-        self.assertEqual(input_directory(c,self.root),self.root/'data/PER/screenshots')
+        self.assertEqual(input_directory(c,self.root),self.root/'data/PHL/screenshots')
         self.assertFalse((self.root/'config/seeds/PER.json').exists())
         with self.assertRaises(ValueError):initialize_country('../bad',root=self.root)
 
@@ -48,7 +48,7 @@ class ConfigurationTests(unittest.TestCase):
         seed_path=publish_seed('PER',['one.png'],root=self.root)
         seed=json.loads(seed_path.read_text())
         self.assertEqual(list(seed['images']),['one.png'])
-        self.assertEqual(seed['input_directory'],'data/PER/screenshots')
+        self.assertEqual(seed['input_directory'],'data/PHL/screenshots')
         self.assertEqual(seed['output_directory'],'output/PER')
         self.assertNotIn('last_calibrated_image',seed)
         self.assertEqual(path.read_bytes(),before)

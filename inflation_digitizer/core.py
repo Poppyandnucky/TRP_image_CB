@@ -21,10 +21,10 @@ def quarter_label(value: int) -> str:
 def report_quarter(filename):
     """Read a report quarter from either YEAR_Qn or YEAR_Mon filenames."""
     stem = Path(filename).stem
-    match = re.search(r'_(\d{4})_?Q([1-4])(?:$|_)', stem, re.IGNORECASE)
+    match = re.search(r'(?:^|[\s_-])(\d{4})[\s_-]?Q([1-4])(?:$|[\s_-])', stem, re.IGNORECASE)
     if match:
         return f'{match[1]}Q{match[2]}'
-    match = re.search(r'_(\d{4})_(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$', stem, re.IGNORECASE)
+    match = re.search(r'(?:^|[\s_-])(\d{4})[\s_-](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$', stem, re.IGNORECASE)
     if match:
         month = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].index(match[2].lower())
         return f'{match[1]}Q{month//3+1}'
@@ -73,6 +73,16 @@ def validate_calibration(c: dict, size: tuple[int, int]) -> None:
         raise ValueError("curve_rgb must contain three values in 0..255")
     if not 0 < c.get("color_tolerance", 22) <= 100:
         raise ValueError("color_tolerance must be in (0, 100]")
+    start, end = [quarter_number(c[k]) for k in ("x_start", "x_end")]
+    for quarter, override in c.get('manual_point_overrides', {}).items():
+        q = quarter_number(quarter)
+        if not start <= q <= end:
+            raise ValueError('Manual point override quarter must be inside the calibrated time range')
+        if not isinstance(override, dict) or 'pixel_y' not in override:
+            raise ValueError('Manual point overrides must map quarters to pixel_y records')
+        pixel_y = float(override['pixel_y'])
+        if not np.isfinite(pixel_y) or not t <= pixel_y <= b:
+            raise ValueError('Manual point override pixel_y must be inside the plot box')
 
 
 def extract(path: Path, calibration: dict, country: str) -> Result:
@@ -184,7 +194,9 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
     span = c["y_max"] - c["y_min"]
     def to_value(y):
         return c["y_max"] - (y - t) * span / (b - t)
+    overrides = c.get('manual_point_overrides', {})
     for q in range(start, end + 1):
+        label = quarter_label(q)
         x = l + (r-l)*(q-start)/(end-start)
         # Three nearby columns reduce antialiasing and grid-line interference.
         # Sample just inside vertical plot borders, which may cover the band.
@@ -254,16 +266,21 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
         if not edges:
             top_y = bottom_y = middle_y = None
             issue = "missing_or_ambiguous_curve"
-            warnings.append(f"{quarter_label(q)}: no unambiguous curve pixels")
+            warnings.append(f"{label}: no unambiguous curve pixels")
         else:
             top_y, bottom_y = np.median(np.array(edges), axis=0).tolist()
             middle_y = (top_y + bottom_y) / 2
             if top_y <= t + 1 or bottom_y >= b - 1:
                 issue = "curve_touches_axis_bound"
-                warnings.append(f"{quarter_label(q)}: curve touches a vertical-axis limit")
+                warnings.append(f"{label}: curve touches a vertical-axis limit")
         if method.startswith('edge_inset') and edges:
             issue = (issue+';' if issue else '')+'edge_sample_inset'
-            warnings.append(f"{quarter_label(q)}: sampled {inset} pixels inside the plot to avoid the frame")
+            warnings.append(f"{label}: sampled {inset} pixels inside the plot to avoid the frame")
+        if label in overrides:
+            middle_y = float(overrides[label]['pixel_y'])
+            issue = (issue+';' if issue else '')+'manual_override'
+            method = 'manual_override'
+        row_method = method if (edges or label in overrides) else 'missing'
         rows.append(dict(country=country, vintage=vintage, quarter=quarter_label(q),
             series="historical" if history else "forecast_band_midpoint",
             inflation_pct_yoy=None if middle_y is None else round(to_value(middle_y), 4),
@@ -271,7 +288,7 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
             central_band_lower_pct=None if history or method == 'visible_forecast_centerline' or bottom_y is None else round(to_value(bottom_y), 4),
             central_band_upper_pct=None if history or method == 'visible_forecast_centerline' or top_y is None else round(to_value(top_y), 4),
             pixel_x=round(x, 3), pixel_y=middle_y,
-            extraction_method=method if edges else 'missing',
+            extraction_method=row_method,
             sampled_x_min=min(used_columns), sampled_x_max=max(used_columns),
             source_file=path.name, source_path=str(path.resolve()),
             calibration_status=c.get("review_status", "unreviewed"), quality_flag=issue))

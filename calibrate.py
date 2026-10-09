@@ -8,7 +8,7 @@ import sys
 import numpy as np
 from PIL import Image
 from inflation_digitizer.batch import DEFAULT_CONFIG, discover, run
-from inflation_digitizer.core import quarter_number, quarter_label, validate_calibration, report_sort_key
+from inflation_digitizer.core import extract, quarter_number, quarter_label, validate_calibration, report_sort_key
 from inflation_digitizer.plot_box import detect_plot_box
 
 
@@ -34,31 +34,46 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
         seed['x_end'] = quarter_label(quarter_number(seed['x_end']) + 1)
     suggested = (list(saved['plot_box']) if saved and saved.get('image_size') == [w,h]
                  and saved.get('plot_box') else detect_plot_box(im, allow_open_axes=seed.get('plot_box_style') == 'open_axes'))
-    fig = plt.figure(figsize=(14, 9))
+    fig = plt.figure(figsize=(18, 9))
     fig.canvas.manager.set_window_title(f'Calibrate {filename}')
-    ax = fig.add_axes([0.035, 0.15, 0.71, 0.79])
+    ax = fig.add_axes([0.035, 0.15, 0.56, 0.79])
     ax.imshow(im)
     ax.set_title(filename if queue_position is None else f'{filename} — {queue_position}')
     ax.set_axis_off()
-    fig.text(0.76, 0.94, 'Enter axis values, then click:', fontsize=11, weight='bold')
-    instruction = fig.text(0.76, 0.89, '1. Plot TOP LEFT corner', fontsize=11, color='#00816f')
-    fig.text(0.76, 0.84, 'Accept the orange box, or\ncorrect its corners below.', fontsize=10, va='top')
+    cal_x, manual_x, col_w = 0.62, 0.805, 0.165
+    cal_panel = fig.add_axes([cal_x - 0.015, 0.135, col_w + 0.03, 0.815])
+    manual_panel = fig.add_axes([manual_x - 0.015, 0.135, col_w + 0.03, 0.815])
+    for panel in (cal_panel, manual_panel):
+        panel.set_axis_off()
+        panel.set_zorder(-1)
+        panel.patch.set_visible(True)
+        panel.patch.set_facecolor('#f7f8fa')
+        panel.patch.set_edgecolor('#cfd6df')
+        panel.patch.set_linewidth(1)
+    fig.text(cal_x, 0.925, 'Calibration', fontsize=12, weight='bold')
+    instruction = fig.text(cal_x, 0.89, '1. Plot TOP LEFT corner', fontsize=11, color='#00816f')
+    fig.text(manual_x, 0.925, 'Manual Adjustment', fontsize=12, weight='bold')
+    fig.text(manual_x, 0.89, 'Enabled after preview.', fontsize=9, color='#7b8794')
+    fig.text(cal_x, 0.84, 'Accept the orange box, or\ncorrect its corners below.', fontsize=10, va='top')
     fields = {}
     quarter_buttons = []  # Keep widget objects alive for their callbacks.
-    for i, (key, label, default) in enumerate([
+    field_specs = [
         ('x_start', 'First quarter', '2022Q1'),
         ('x_end', 'Last quarter', '2027Q3'),
         ('y_min', 'Y minimum', '-4'), ('y_max', 'Y maximum', '10'),
-        ('color_tolerance', 'Colour tolerance', '22'),
-    ]):
-        y = 0.68-i*0.09
-        fig.text(0.77, y+0.042, label + (' (+1 quarter)' if key == 'x_end' and advanced else ''), fontsize=10)
+        ('color_tolerance', 'Forecast tolerance', '22'),
+        ('historical_color_tolerance', 'Historical tolerance', '45'),
+    ]
+    field_ys = [0.68, 0.59, 0.50, 0.41, 0.325, 0.25]
+    for i, (key, label, default) in enumerate(field_specs):
+        y = field_ys[i]
+        fig.text(cal_x, y+0.042, label + (' (+1 quarter)' if key == 'x_end' and advanced else ''), fontsize=10)
         is_quarter = key in ('x_start', 'x_end')
         is_axis_limit = key in ('y_min', 'y_max')
-        bounds = [0.81, y, 0.12, 0.038] if is_quarter or is_axis_limit else [0.77, y, 0.20, 0.038]
+        bounds = [cal_x + 0.036, y, col_w - 0.072, 0.038] if is_quarter or is_axis_limit else [cal_x, y, col_w, 0.038]
         fields[key] = TextBox(fig.add_axes(bounds), '', initial=str(seed.get(key, default)))
         if is_quarter or is_axis_limit:
-            for left, delta, label in [(0.77, -1, '◀'), (0.94, 1, '▶')]:
+            for left, delta, label in [(cal_x, -1, '◀'), (cal_x + col_w - 0.03, 1, '▶')]:
                 button = Button(fig.add_axes([left, y, 0.03, 0.038]), label if is_quarter else ('−' if delta < 0 else '+'))
                 def increment(event, field=key, amount=delta):
                     try:
@@ -79,7 +94,7 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
                     fig.canvas.draw_idle()
                 button.on_clicked(increment)
                 quarter_buttons.append(button)
-    note = fig.text(0.04, 0.05, 'Accept the box or select two corners; then select the historical endpoint and darkest band.', fontsize=10)
+    note = fig.text(0.035, 0.055, 'Accept the box or select two corners; then select the historical endpoint and darkest band.', fontsize=10)
     picks, markers = [], []
     adjustment = [None]
     proposal, = ax.plot([], [], '--o', color='#e69500', lw=1.5, ms=5, visible=False)
@@ -101,7 +116,10 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
     # Span the whole displayed image, including the printed quarter labels.
     quarter_guide = ax.axvline(0, color='#d60078', linestyle='--', lw=1,
                               visible=False, zorder=5)
-    quarter_readout = fig.text(0.77, 0.225, '', fontsize=11, color='#d60078')
+    quarter_readout = fig.text(cal_x, 0.235, '', fontsize=9, color='#d60078', va='top')
+    missing_readout = fig.text(manual_x, 0.735, '', fontsize=9, color='#a00000', va='top')
+    adjustment_readout = fig.text(manual_x, 0.835, 'Selected Adjustment Point: none\nCurrent Value: --',
+                                  fontsize=10, color='#536276', va='top')
 
     # A white outline keeps the moving crosshairs visible over dark fan bands.
     import matplotlib.patheffects as path_effects
@@ -132,11 +150,17 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
             return None
         quarter_guide.set_xdata([snapped_x, snapped_x])
         quarter_guide.set_visible(True)
-        quarter_readout.set_text(('Selected: ' if selected else 'Quarter: ') + label)
+        quarter_readout.set_text(('Selected Historical Endpoint: ' if selected else 'Quarter: ') + display_quarter(label))
         return snapped_x
 
     def move(event):
         x, y = getattr(event, 'xdata', None), getattr(event, 'ydata', None)
+        if workflow['state'] == PREVIEW:
+            return
+        if workflow['state'] == MANUAL_ADJUSTMENT:
+            if preview['dragging'] and getattr(event, 'inaxes', None) == ax and y is not None:
+                move_selected_point(y)
+            return
         on_image = (getattr(event, 'inaxes', None) == ax and
                     x is not None and y is not None and
                     not getattr(fig.canvas.manager.toolbar, 'mode', ''))
@@ -156,11 +180,15 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
         fig.canvas.draw_idle()
 
     def leave(event):
+        preview['dragging'] = False
         hide_crosshairs()
         if len(picks) == 2:
             quarter_guide.set_visible(False)
             quarter_readout.set_text('Hover over the endpoint.')
         fig.canvas.draw_idle()
+
+    def release(event):
+        preview['dragging'] = False
 
     def refresh_guide(text):
         if len(picks) >= 3:
@@ -173,9 +201,300 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
     for key in ('x_start', 'x_end'):
         fields[key].on_text_change(refresh_guide)
     hints = ['1. Plot TOP LEFT corner', '2. Plot BOTTOM RIGHT corner',
-             '3. LAST HISTORICAL point', '4. INSIDE darkest forecast band', 'Ready: save calibration']
+             '3. LAST HISTORICAL point', '4. HISTORICAL line colour',
+             '5. INSIDE darkest forecast band', 'Review detected points']
+    CALIBRATION, PREVIEW, MANUAL_ADJUSTMENT = 'calibration', 'preview', 'manual_adjustment'
+    workflow = {'state': CALIBRATION}
+
+    preview = dict(rows=[], automatic_rows=[], overrides={},
+                   artists=[], selected=None, dragging=False, calibration=None,
+                   adding_missing=None, missing_cycle=0)
+
+    def display_quarter(label):
+        return label.replace('Q', ' Q')
+
+    def pixel_color(x, y):
+        return pixels[min(h-1, max(0, round(y))), min(w-1, max(0, round(x)))].tolist()
+
+    def y_value(calibration, y):
+        l, t, r, b = calibration['plot_box']
+        span = calibration['y_max'] - calibration['y_min']
+        return calibration['y_max'] - (y - t) * span / (b - t)
+
+    def build_calibration(include_overrides=False):
+        if len(picks) != 5:
+            raise ValueError('Accept or select the box, then click the endpoint, historical line, and forecast band.')
+        (l,t),(r,b),(hx,hy),(histx,histy),(cx,cy) = picks
+        start, end = (quarter_number(fields['x_start'].text),quarter_number(fields['x_end'].text))
+        if r <= l or b <= t:
+            raise ValueError('Select top left, then bottom right in that order.')
+        for label, x, y in [('historical endpoint', hx, hy), ('historical colour sample', histx, histy),
+                            ('forecast colour sample', cx, cy)]:
+            if not l <= x <= r or not t <= y <= b:
+                raise ValueError(f'The {label} must be inside the plot.')
+        hist = round(start+(hx-l)*(end-start)/(r-l))
+        forecast_color = pixel_color(cx, cy)
+        if max(forecast_color)-min(forecast_color) < 20:
+            raise ValueError('Selected forecast colour is nearly grey. Click inside the coloured darkest band, away from grid lines.')
+        c = dict(image_size=[w,h], plot_box=[round(v,2) for v in (l,t,r,b)],
+                 y_min=float(fields['y_min'].text), y_max=float(fields['y_max'].text),
+                 x_start=quarter_label(start), x_end=quarter_label(end), last_historical=quarter_label(hist),
+                 historical_rgb=pixel_color(histx, histy),
+                 historical_color_tolerance=float(fields['historical_color_tolerance'].text),
+                 curve_rgb=forecast_color, color_tolerance=float(fields['color_tolerance'].text),
+                 review_status='manually_calibrated',
+                 notes='Review generated overlay before changing review_status to reviewed.')
+        for key in ('plot_box_style', 'ignore_regions'):
+            if key in seed:
+                c[key] = seed[key]
+        if include_overrides and preview['overrides']:
+            c['manual_point_overrides'] = {
+                quarter: {'pixel_y': round(float(values['pixel_y']), 3)}
+                for quarter, values in sorted(preview['overrides'].items())
+            }
+        validate_calibration(c, (w,h))
+        return c
+
+    def clear_preview_artists():
+        for artist in preview['artists']:
+            artist.remove()
+        preview['artists'].clear()
+
+    def draw_preview():
+        clear_preview_artists()
+        rows = preview['rows']
+        selected = preview['selected']
+        previous = None
+        for row in rows:
+            if row['pixel_y'] is None:
+                previous = None
+                continue
+            point = (row['pixel_x'], row['pixel_y'])
+            color = '#e65c00' if row['series'] == 'historical' else '#d60078'
+            if previous is not None:
+                preview['artists'].extend(ax.plot([previous[0], point[0]], [previous[1], point[1]],
+                                                  color=color, lw=1.5, alpha=.75, zorder=20))
+            previous = point
+        for index, row in enumerate(rows):
+            if row['pixel_y'] is None:
+                continue
+            selected_row = index == selected
+            color = '#ffbf00' if selected_row else ('#e65c00' if row['series'] == 'historical' else '#d60078')
+            size = 10 if selected_row else 6
+            preview['artists'].extend(ax.plot(row['pixel_x'], row['pixel_y'], 'o',
+                                              ms=size, mfc='none', mec=color, mew=2.2,
+                                              zorder=25))
+        fig.canvas.draw_idle()
+
+    def selected_message():
+        index = preview['selected']
+        if index is None:
+            return 'Selected Adjustment Point: none\nCurrent Value: --'
+        row = preview['rows'][index]
+        value = row['inflation_pct_yoy']
+        value_text = 'missing' if value is None else f'{value:.4g}%'
+        return f"Selected Adjustment Point: {display_quarter(row['quarter'])}\nCurrent Value: {value_text}"
+
+    def update_preview_note():
+        adjustment_readout.set_text(selected_message())
+        if workflow['state'] == MANUAL_ADJUSTMENT:
+            adjustment_readout.set_color('black' if preview['selected'] is not None else '#536276')
+        else:
+            adjustment_readout.set_color('#9aa3ad')
+
+    def missing_rows():
+        return [row for row in preview['rows'] if row['pixel_y'] is None]
+
+    def update_missing_readout():
+        missing = [display_quarter(row['quarter']) for row in missing_rows()]
+        if not missing:
+            missing_readout.set_text('')
+        elif len(missing) == 1:
+            missing_readout.set_text(f'Missing data point: {missing[0]}')
+        else:
+            missing_readout.set_text('Missing data points:\n' + ', '.join(missing))
+        missing_readout.set_color('#a00000' if workflow['state'] == MANUAL_ADJUSTMENT else '#b7b7b7')
+
+    def set_calibration_markers_visible(visible):
+        # Keep the accepted plot box visible; hide only temporary pick markers.
+        for marker in markers:
+            if marker.get_linestyle() == '--':
+                marker.set_visible(True)
+            else:
+                marker.set_visible(visible)
+        proposal.set_visible(visible and suggested is not None and len(picks) < 2)
+
+    def style_button_enabled(button, enabled):
+        button.set_active(enabled)
+        button.ax.set_facecolor('#e0e0e0' if enabled else '#f4f5f6')
+        for text in button.ax.texts:
+            text.set_color('black' if enabled else '#9aa3ad')
+        for spine in button.ax.spines.values():
+            spine.set_edgecolor('black' if enabled else '#c7ced6')
+
+    def set_manual_controls_enabled(enabled):
+        for button in (add_missing_button, reset_manual_button):
+            style_button_enabled(button, enabled)
+        adjustment_readout.set_color('#536276' if enabled else '#9aa3ad')
+        missing_readout.set_color('#a00000' if enabled else '#b7b7b7')
+
+    def set_stage(stage):
+        workflow['state'] = stage
+        next_manual_button.set_active(stage == PREVIEW)
+        next_manual_button.ax.set_alpha(1 if stage == PREVIEW else .35)
+        set_manual_controls_enabled(stage == MANUAL_ADJUSTMENT)
+        if stage == PREVIEW:
+            set_calibration_markers_visible(False)
+            preview['selected'] = None
+            preview['dragging'] = False
+            preview['adding_missing'] = None
+            instruction.set_text('Preview detected points')
+            note.set_text('Preview only. Use Reset All to recalibrate, or continue to manual adjustment.')
+            note.set_color('black')
+            update_preview_note()
+        elif stage == MANUAL_ADJUSTMENT:
+            set_calibration_markers_visible(False)
+            instruction.set_text('Manual point adjustment')
+            note.set_text('Select and drag a point vertically. Add Missing Point fixes one missing quarter at a time.')
+            note.set_color('black')
+            update_preview_note()
+        fig.canvas.draw_idle()
+
+    def show_preview(reset_overrides=False, stage=PREVIEW):
+        try:
+            if reset_overrides:
+                preview['overrides'].clear()
+            calibration = build_calibration(include_overrides=False)
+            result = extract(path, calibration, config.get('country', 'TST'))
+            preview['calibration'] = calibration
+            preview['automatic_rows'] = [dict(row) for row in result.rows]
+            rows = [dict(row) for row in result.rows]
+            for row in rows:
+                override = preview['overrides'].get(row['quarter'])
+                if override is not None:
+                    row['pixel_y'] = float(override['pixel_y'])
+                    row['inflation_pct_yoy'] = round(y_value(calibration, row['pixel_y']), 4)
+                    row['extraction_method'] = 'manual_override'
+                    flags = [flag for flag in (row.get('quality_flag') or '').split(';') if flag]
+                    if 'manual_override' not in flags:
+                        flags.append('manual_override')
+                    row['quality_flag'] = ';'.join(flags)
+            preview['rows'] = rows
+            if preview['selected'] is not None and preview['selected'] >= len(rows):
+                preview['selected'] = None
+            draw_preview()
+            update_missing_readout()
+            set_stage(stage)
+        except (ValueError, OSError) as exc:
+            note.set_text(str(exc))
+            note.set_color('#a00000')
+            fig.canvas.draw_idle()
+
+    def select_preview_point(x, y):
+        candidates = [(index, (row['pixel_x']-x)**2 + (row['pixel_y']-y)**2)
+                      for index, row in enumerate(preview['rows']) if row['pixel_y'] is not None]
+        if not candidates:
+            return False
+        index, distance = min(candidates, key=lambda item: item[1])
+        if distance > 20**2:
+            return False
+        preview['selected'] = index
+        preview['dragging'] = True
+        preview['adding_missing'] = None
+        update_preview_note()
+        draw_preview()
+        return True
+
+    def mark_manual_override(row, y):
+        calibration = preview['calibration']
+        top, bottom = calibration['plot_box'][1], calibration['plot_box'][3]
+        y = max(top, min(bottom, y))
+        row['pixel_y'] = float(y)
+        row['inflation_pct_yoy'] = round(y_value(calibration, y), 4)
+        row['extraction_method'] = 'manual_override'
+        flags = [flag for flag in (row.get('quality_flag') or '').split(';') if flag]
+        if 'manual_override' not in flags:
+            flags.append('manual_override')
+        row['quality_flag'] = ';'.join(flags)
+        preview['overrides'][row['quarter']] = {'pixel_y': float(y)}
+
+    def move_selected_point(y):
+        index = preview['selected']
+        if index is None:
+            return
+        row = preview['rows'][index]
+        mark_manual_override(row, y)
+        update_missing_readout()
+        update_preview_note()
+        draw_preview()
+
+    def choose_missing_point(event):
+        if workflow['state'] != MANUAL_ADJUSTMENT:
+            return
+        missing = missing_rows()
+        if not missing:
+            note.set_text('No missing points remain.')
+            note.set_color('black')
+            fig.canvas.draw_idle()
+            return
+        row = missing[preview['missing_cycle'] % len(missing)]
+        preview['missing_cycle'] += 1
+        preview['selected'] = preview['rows'].index(row)
+        preview['adding_missing'] = row['quarter']
+        update_preview_note()
+        note.set_text(f"Click the plot to set the Y value for {display_quarter(row['quarter'])}. X stays fixed.")
+        note.set_color('black')
+        draw_preview()
+
+    def reset_calibration():
+        workflow['state'] = CALIBRATION
+        preview['selected'] = None
+        preview['dragging'] = False
+        preview['overrides'].clear()
+        preview['rows'].clear()
+        preview['automatic_rows'].clear()
+        preview['calibration'] = None
+        preview['adding_missing'] = None
+        clear_preview_artists()
+        hide_crosshairs()
+        picks.clear()
+        adjustment[0] = None
+        quarter_guide.set_visible(False)
+        quarter_readout.set_text('')
+        missing_readout.set_text('')
+        adjustment_readout.set_text('Selected Adjustment Point: none\nCurrent Value: --')
+        adjustment_readout.set_color('#9aa3ad')
+        note.set_text('Accept the box or select two corners; then select the historical endpoint and darkest band.')
+        note.set_color('black')
+        for marker in markers:
+            marker.remove()
+        markers.clear()
+        show_proposal()
+        instruction.set_text('Review suggested box' if suggested is not None else hints[0])
+        next_manual_button.set_active(False)
+        next_manual_button.ax.set_alpha(.35)
+        set_manual_controls_enabled(False)
+        fig.canvas.draw_idle()
+
     def click(event):
-        if event.inaxes != ax or event.button != 1 or len(picks) >= 4:
+        if workflow['state'] == PREVIEW:
+            return
+        if workflow['state'] == MANUAL_ADJUSTMENT:
+            if event.inaxes == ax and event.button == 1 and preview['adding_missing']:
+                index = next((i for i, row in enumerate(preview['rows'])
+                              if row['quarter'] == preview['adding_missing']), None)
+                if index is not None and event.ydata is not None:
+                    preview['selected'] = index
+                    mark_manual_override(preview['rows'][index], event.ydata)
+                    preview['adding_missing'] = None
+                    update_missing_readout()
+                    update_preview_note()
+                    draw_preview()
+                return
+            if event.inaxes == ax and event.button == 1:
+                select_preview_point(event.xdata, event.ydata)
+            return
+        if event.inaxes != ax or event.button != 1 or len(picks) >= 5:
             return
         if getattr(fig.canvas.manager.toolbar, 'mode', ''):
             return
@@ -206,24 +525,23 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
         picks.append((x, y))
         markers.extend(ax.plot(x, y, 'o', ms=7, mfc='none', mec='#d60078', mew=2))
         instruction.set_text(hints[len(picks)])
-        if len(picks) == 4:
+        if len(picks) == 5:
             hide_crosshairs()
+            show_preview(reset_overrides=True, stage=PREVIEW)
         if len(picks) == 2:
             show_selected_box()
         fig.canvas.draw_idle()
     def reset(event):
-        hide_crosshairs()
-        picks.clear()
-        adjustment[0] = None
-        quarter_guide.set_visible(False)
-        quarter_readout.set_text('')
-        note.set_text('Accept the box or select two corners; then select the historical endpoint and darkest band.')
+        reset_calibration()
+
+    def reset_manual_adjustments(event):
+        if workflow['state'] != MANUAL_ADJUSTMENT:
+            return
+        preview['selected'] = None
+        preview['adding_missing'] = None
+        show_preview(reset_overrides=True, stage=MANUAL_ADJUSTMENT)
+        note.set_text('Manual adjustments reset to the current automatic extraction.')
         note.set_color('black')
-        for marker in markers:
-            marker.remove()
-        markers.clear()
-        show_proposal()
-        instruction.set_text('Review suggested box' if suggested is not None else hints[0])
         fig.canvas.draw_idle()
 
     def accept_box(event):
@@ -254,30 +572,12 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
     outcome = ['stopped']
     def save(event):
         try:
-            if len(picks) != 4:
-                raise ValueError('Accept or select the box, then click the historical endpoint and darkest band.')
-            (l,t),(r,b),(hx,hy),(cx,cy) = picks
-            start, end = (quarter_number(fields['x_start'].text),quarter_number(fields['x_end'].text))
-            if r <= l or b <= t:
-                raise ValueError('Select top left, then bottom right in that order.')
-            if not l <= hx <= r or not t <= hy <= b:
-                raise ValueError('The historical endpoint must be inside the plot.')
-            if not l <= cx <= r or not t <= cy <= b:
-                raise ValueError('The colour sample must be inside the plot.')
-            hist = round(start+(hx-l)*(end-start)/(r-l))
-            # Use the actual selected pixel so a very narrow band is not
-            # replaced by the majority colour of a surrounding square.
-            color = pixels[min(h-1, max(0, round(cy))), min(w-1, max(0, round(cx)))].tolist()
-            if max(color)-min(color) < 20:
-                raise ValueError('Selected colour is nearly grey. Click inside the coloured darkest band, away from grid lines.')
-            c = dict(image_size=[w,h], plot_box=[round(v,2) for v in (l,t,r,b)],
-                     y_min=float(fields['y_min'].text), y_max=float(fields['y_max'].text),
-                     x_start=quarter_label(start), x_end=quarter_label(end), last_historical=quarter_label(hist),
-                     curve_rgb=color, color_tolerance=float(fields['color_tolerance'].text),
-                     review_status='manually_calibrated', notes='Review generated overlay before changing review_status to reviewed.')
-            for key in ('historical_rgb', 'historical_color_tolerance', 'plot_box_style', 'ignore_regions'):
-                if key in seed:
-                    c[key] = seed[key]
+            if len(picks) != 5:
+                raise ValueError('Accept or select the box, then click the endpoint, historical line, and forecast band.')
+            if workflow['state'] == CALIBRATION:
+                show_preview(reset_overrides=False, stage=PREVIEW)
+                raise ValueError('Review the detected points, then click Save again.')
+            c = build_calibration(include_overrides=True)
             validate_calibration(c, (w,h))
             latest_config = load_working_config(config_path)
             if filename in latest_config.get('images', {}):
@@ -294,7 +594,11 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
             note.set_text(str(exc))
             note.set_color('#a00000')
             fig.canvas.draw_idle()
-    accept_button = Button(fig.add_axes([0.77,0.755,0.20,0.04]), 'Accept box')
+    def enter_manual_adjustment(event):
+        if workflow['state'] != PREVIEW:
+            return
+        set_stage(MANUAL_ADJUSTMENT)
+    accept_button = Button(fig.add_axes([cal_x,0.755,col_w,0.04]), 'Accept box')
     accept_button.on_clicked(accept_box)
     corner_buttons = []
     for index, label in enumerate(('Adjust top left', 'Adjust bottom right')):
@@ -308,9 +612,15 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
         instruction.set_text('Review suggested box')
     else:
         note.set_text('No clear plot box detected. Click the top-left and bottom-right corners.')
-    reset_button = Button(fig.add_axes([0.77,0.14,0.20,0.05]), 'Reset clicks')
-    save_button = Button(fig.add_axes([0.77,0.075,0.20,0.05]),
+    reset_button = Button(fig.add_axes([cal_x,0.15,col_w,0.045]), 'Reset All')
+    next_manual_button = Button(fig.add_axes([cal_x,0.095,col_w,0.045]), 'Next: Manual Adjustment')
+    add_missing_button = Button(fig.add_axes([manual_x,0.56,col_w,0.05]), 'Add Missing Point')
+    reset_manual_button = Button(fig.add_axes([manual_x,0.495,col_w,0.05]), 'Reset Manual Adjustments')
+    save_button = Button(fig.add_axes([cal_x,0.045,col_w * 2 + (manual_x - cal_x - col_w),0.04]),
                          'Save and next' if queue_position is not None else 'Save and extract')
+    next_manual_button.set_active(False)
+    next_manual_button.ax.set_alpha(.35)
+    set_manual_controls_enabled(False)
     navigation_buttons = []
     if queue_position is not None:
         def skip(event):
@@ -318,15 +628,19 @@ def launch(config_path, filename, template=None, *, queue_position=None, advance
             plt.close(fig)
         def stop(event):
             plt.close(fig)
-        skip_button = Button(fig.add_axes([0.77,0.015,0.095,0.04]), 'Skip')
-        stop_button = Button(fig.add_axes([0.875,0.015,0.095,0.04]), 'Stop')
+        skip_button = Button(fig.add_axes([cal_x,0.0,0.175,0.035]), 'Skip')
+        stop_button = Button(fig.add_axes([manual_x,0.0,0.165,0.035]), 'Stop')
         skip_button.on_clicked(skip)
         stop_button.on_clicked(stop)
         navigation_buttons.extend([skip_button, stop_button])
     reset_button.on_clicked(reset)
+    reset_manual_button.on_clicked(reset_manual_adjustments)
+    add_missing_button.on_clicked(choose_missing_point)
+    next_manual_button.on_clicked(enter_manual_adjustment)
     save_button.on_clicked(save)
     fig.canvas.mpl_connect('button_press_event', click)
     fig.canvas.mpl_connect('motion_notify_event', move)
+    fig.canvas.mpl_connect('button_release_event', release)
     fig.canvas.mpl_connect('figure_leave_event', leave)
     fig.canvas.mpl_connect('axes_leave_event', leave)
     plt.show(block=True)
