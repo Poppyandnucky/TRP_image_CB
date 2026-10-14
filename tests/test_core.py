@@ -2,7 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from PIL import Image, ImageDraw
-from inflation_digitizer.core import extract, quarter_number, quarter_label, validate_calibration, report_quarter, report_sort_key
+from inflation_digitizer.core import (extract, quarter_number, quarter_label, month_number, month_label,
+                                      validate_calibration, report_quarter, report_sort_key)
 
 class ExtractionTests(unittest.TestCase):
     def setUp(self):
@@ -43,6 +44,7 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(report_quarter('BRA_2012_Dec.png'),'2012Q4')
         self.assertEqual(report_quarter('CHL_2025_Q3.png'),'2025Q3')
         self.assertEqual(report_quarter('PER 2002 Q2.png'),'2002Q2')
+        self.assertEqual(report_quarter('PER2002Q2.png'),'2002Q2')
         names=['BRA_2013_Dec.png','BRA_2013_Sep.png','BRA_2013_Mar.png','BRA_2013_Jun.png']
         self.assertEqual(sorted(names,key=report_sort_key),[names[2],names[3],names[1],names[0]])
         self.make_image()
@@ -51,12 +53,25 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(extract(path,self.c,'BRA').rows[0]['vintage'],'2025Q1')
 
     def test_unsupported_sampling_is_rejected(self):
-        with self.assertRaisesRegex(ValueError,'Only quarterly'):
+        with self.assertRaisesRegex(ValueError,'sampling'):
             validate_calibration({**self.c,'sampling':'quarter_end_month'},(140,140))
 
     def test_quarters(self):
         self.assertEqual(quarter_label(quarter_number('2025_Q4')+1),'2026Q1')
         with self.assertRaises(ValueError):quarter_number('2025Q5')
+
+    def test_monthly_sampling_uses_month_periods_and_overrides(self):
+        self.make_image()
+        c={**self.c,'sampling':'monthly','x_start':'2025-01','x_end':'2025-05',
+           'last_historical':'2025-02','manual_point_overrides':{'2025-03':{'pixel_y':80}}}
+        result=extract(self.path,c,'TST')
+        self.assertEqual([row['period'] for row in result.rows],
+                         ['2025-01','2025-02','2025-03','2025-04','2025-05'])
+        self.assertEqual(result.rows[1]['series'],'historical')
+        self.assertEqual(result.rows[2]['series'],'forecast_band_midpoint')
+        self.assertEqual(result.rows[2]['extraction_method'],'manual_override')
+        self.assertAlmostEqual(result.rows[2]['inflation_pct_yoy'],-1,delta=.01)
+        self.assertEqual(month_label(month_number('2025-12')+1),'2026-01')
     def test_known_band_midpoints_and_history_split(self):
         self.make_image()
         result=extract(self.path,self.c,'TST')

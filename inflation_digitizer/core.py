@@ -18,10 +18,41 @@ def quarter_label(value: int) -> str:
     return f"{value // 4}Q{value % 4 + 1}"
 
 
+def month_number(value: str) -> int:
+    match = re.fullmatch(r"(\d{4})-(\d{2})", value.strip())
+    if not match or not 1 <= int(match[2]) <= 12:
+        raise ValueError(f"Invalid month {value!r}; use 2025-03")
+    return int(match[1]) * 12 + int(match[2]) - 1
+
+
+def month_label(value: int) -> str:
+    return f"{value // 12}-{value % 12 + 1:02d}"
+
+
+def sampling_mode(c: dict | None) -> str:
+    mode = (c or {}).get('sampling', 'quarterly')
+    if mode not in ('quarterly', 'monthly'):
+        raise ValueError('sampling must be "quarterly" or "monthly"')
+    return mode
+
+
+def period_number(value: str, sampling: str) -> int:
+    return month_number(value) if sampling == 'monthly' else quarter_number(value)
+
+
+def period_label(value: int, sampling: str) -> str:
+    return month_label(value) if sampling == 'monthly' else quarter_label(value)
+
+
+def month_to_quarter(value: str) -> str:
+    number = month_number(value)
+    return quarter_label((number // 3))
+
+
 def report_quarter(filename):
     """Read a report quarter from either YEAR_Qn or YEAR_Mon filenames."""
     stem = Path(filename).stem
-    match = re.search(r'(?:^|[\s_-])(\d{4})[\s_-]?Q([1-4])(?:$|[\s_-])', stem, re.IGNORECASE)
+    match = re.search(r'(?:^|[A-Za-z\s_-])(\d{4})[\s_-]?Q([1-4])(?:$|[\s_-])', stem, re.IGNORECASE)
     if match:
         return f'{match[1]}Q{match[2]}'
     match = re.search(r'(?:^|[\s_-])(\d{4})[\s_-](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)$', stem, re.IGNORECASE)
@@ -47,6 +78,7 @@ class Result:
 
 
 def validate_calibration(c: dict, size: tuple[int, int]) -> None:
+    sampling = sampling_mode(c)
     if list(size) != c["image_size"]:
         raise ValueError(f"Image size {size} differs from calibrated {c['image_size']}; recalibrate.")
     l, t, r, b = c["plot_box"]
@@ -54,11 +86,9 @@ def validate_calibration(c: dict, size: tuple[int, int]) -> None:
         raise ValueError("Plot box must be inside image: left, top, right, bottom.")
     if not c["y_min"] < c["y_max"]:
         raise ValueError("y_min must be below y_max")
-    start, end, last = [quarter_number(c[k]) for k in ("x_start", "x_end", "last_historical")]
+    start, end, last = [period_number(c[k], sampling) for k in ("x_start", "x_end", "last_historical")]
     if not start <= last <= end or start == end:
         raise ValueError("Require x_start <= last_historical <= x_end, with a positive time span")
-    if c.get('sampling') not in (None, 'quarterly'):
-        raise ValueError('Only quarterly chart calibrations are supported; archive or recalibrate this entry.')
     for region in c.get('ignore_regions', []):
         if len(region) != 4 or not (0 <= region[0] < region[2] <= size[0] and 0 <= region[1] < region[3] <= size[1]):
             raise ValueError('Ignored annotation rectangles must be inside the image')
@@ -73,11 +103,11 @@ def validate_calibration(c: dict, size: tuple[int, int]) -> None:
         raise ValueError("curve_rgb must contain three values in 0..255")
     if not 0 < c.get("color_tolerance", 22) <= 100:
         raise ValueError("color_tolerance must be in (0, 100]")
-    start, end = [quarter_number(c[k]) for k in ("x_start", "x_end")]
-    for quarter, override in c.get('manual_point_overrides', {}).items():
-        q = quarter_number(quarter)
+    start, end = [period_number(c[k], sampling) for k in ("x_start", "x_end")]
+    for period, override in c.get('manual_point_overrides', {}).items():
+        q = period_number(period, sampling)
         if not start <= q <= end:
-            raise ValueError('Manual point override quarter must be inside the calibrated time range')
+            raise ValueError('Manual point override period must be inside the calibrated time range')
         if not isinstance(override, dict) or 'pixel_y' not in override:
             raise ValueError('Manual point overrides must map quarters to pixel_y records')
         pixel_y = float(override['pixel_y'])
@@ -111,7 +141,8 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
         mask[int(y1):int(y2),int(x1):int(x2)]=False
         if historical_mask is not None:
             historical_mask[int(y1):int(y2),int(x1):int(x2)]=False
-    start, end, last = [quarter_number(c[k]) for k in ("x_start", "x_end", "last_historical")]
+    sampling = sampling_mode(c)
+    start, end, last = [period_number(c[k], sampling) for k in ("x_start", "x_end", "last_historical")]
     warnings = []
     rows = []
     recovered_history = []
@@ -196,7 +227,7 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
         return c["y_max"] - (y - t) * span / (b - t)
     overrides = c.get('manual_point_overrides', {})
     for q in range(start, end + 1):
-        label = quarter_label(q)
+        label = period_label(q, sampling)
         x = l + (r-l)*(q-start)/(end-start)
         # Three nearby columns reduce antialiasing and grid-line interference.
         # Sample just inside vertical plot borders, which may cover the band.
@@ -232,17 +263,17 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
             edges = [edge for xx in columns if (edge := column_edges(xx, True)) is not None]
             if edges:
                 method = 'historical_color_recovery'
-                recovered_history.append(quarter_label(q))
+                recovered_history.append(label)
         if not edges and not history:
             edges = [edge for xx in columns if (edge := column_edges(xx, bridge_ink=True)) is not None]
             if edges:
                 method = 'forecast_overprint_recovery'
-                recovered_forecast.append(quarter_label(q))
+                recovered_forecast.append(label)
             else:
                 edges = [edge for xx in columns if (edge := occluded_centerline(xx)) is not None]
                 if edges:
                     method = 'visible_forecast_centerline'
-                    recovered_forecast.append(quarter_label(q))
+                    recovered_forecast.append(label)
         # Blurred/thick frames can obscure more than the two-pixel inset.
         # Retry a narrow strip farther inside the plot only at axis endpoints.
         if not edges and q in (start, end) and min(abs(x-l),abs(x-r)) < 1 and not (history and historical_mask is not None):
@@ -256,12 +287,12 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
                 edges = [edge for xx in used_columns if (edge := column_edges(xx, bridge_ink=True)) is not None]
                 if edges:
                     method = 'edge_inset_forecast_overprint'
-                    recovered_forecast.append(quarter_label(q))
+                    recovered_forecast.append(label)
             elif history and not mask[:, used_columns].any():
                 edges = [edge for xx in used_columns if (edge := column_edges(xx, True)) is not None]
                 if edges:
                     method = 'edge_inset_historical_recovery'
-                    recovered_history.append(quarter_label(q))
+                    recovered_history.append(label)
         issue = ""
         if not edges:
             top_y = bottom_y = middle_y = None
@@ -281,7 +312,12 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
             issue = (issue+';' if issue else '')+'manual_override'
             method = 'manual_override'
         row_method = method if (edges or label in overrides) else 'missing'
-        rows.append(dict(country=country, vintage=vintage, quarter=quarter_label(q),
+        row = dict(country=country, vintage=vintage)
+        if sampling == 'monthly':
+            row['period'] = label
+        else:
+            row['quarter'] = label
+        row.update(dict(
             series="historical" if history else "forecast_band_midpoint",
             inflation_pct_yoy=None if middle_y is None else round(to_value(middle_y), 4),
             # Bounds describe the visible darkest band, not estimation error.
@@ -292,6 +328,7 @@ def extract(path: Path, calibration: dict, country: str) -> Result:
             sampled_x_min=min(used_columns), sampled_x_max=max(used_columns),
             source_file=path.name, source_path=str(path.resolve()),
             calibration_status=c.get("review_status", "unreviewed"), quality_flag=issue))
+        rows.append(row)
     if recovered_forecast:
         warnings.append(f"Forecast overprint recovery used for {len(recovered_forecast)} points; check the magenta overlay")
     if recovered_history:

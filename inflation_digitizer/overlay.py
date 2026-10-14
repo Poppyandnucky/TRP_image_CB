@@ -40,7 +40,8 @@ def save_overlay(source: Path, result: Result, destination: Path):
         if row['pixel_y'] is None:
             continue
         x, y = row['pixel_x'], row['pixel_y']
-        last_historical = row['quarter'] == c['last_historical']
+        period = row.get('period', row.get('quarter'))
+        last_historical = period == c['last_historical']
         radius = (9 if last_historical else 6) * scale
         bounds = (x-radius, y-radius, x+radius, y+radius)
         shape = draw.rectangle if last_historical else draw.ellipse
@@ -75,7 +76,7 @@ def save_overlay(source: Path, result: Result, destination: Path):
     lines = [
         (f'{source.stem} | Digitization check', '#172c43', 20),
         ('Orange: historical curve.  Magenta: darkest-band midpoint estimate.', '#172c43', 16),
-        ('Open circles: quarterly samples.  Open square: last historical point.', '#172c43', 15),
+        ('Open circles: sampled points.  Open square: last historical point.', '#172c43', 15),
         ('Darkest-band midpoint is a proxy; the statistical median is not verified.', '#536276', 15),
         (f"Review: {c.get('review_status', 'unreviewed')} | Flags: {len(result.warnings)} (see review report)", '#536276', 14),
     ]
